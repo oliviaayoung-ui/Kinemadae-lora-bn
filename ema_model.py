@@ -50,3 +50,17 @@ class EMA:
             if name in self.backup_buffers:
                 buf.data = self.backup_buffers[name]
         self.backup_buffers = {}
+
+    # [NEW] resume/load support: shadow + shadow_buffers 모두 직렬화
+    def state_dict(self):
+        return {'shadow': self.shadow, 'shadow_buffers': self.shadow_buffers}
+
+    def load_state_dict(self, sd):
+        # backward compat: 기존 ckpt 는 shadow 만 (dict 자체)
+        if isinstance(sd, dict) and 'shadow' in sd and 'shadow_buffers' in sd:
+            self.shadow = sd['shadow']
+            self.shadow_buffers = sd['shadow_buffers']
+        else:
+            # legacy: dict 가 shadow 자체 → buffer 는 빈 dict (resume 시 register() 로 init)
+            self.shadow = sd
+            self.shadow_buffers = {}

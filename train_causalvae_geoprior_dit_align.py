@@ -493,6 +493,7 @@ def save_checkpoint(
     checkpoint_dir,
     filename="checkpoint.ckpt",
     ema_state_dict={},
+    lora_state_dict={},
 ):
     filepath = checkpoint_dir / Path(filename)
     torch.save(
@@ -502,6 +503,7 @@ def save_checkpoint(
             "optimizer_state": optimizer_state,
             "state_dict": state_dict,
             "ema_state_dict": ema_state_dict,
+            "lora_state_dict": lora_state_dict,
             "scaler_state": scaler_state,
             "sampler_state": sampler_state,
         },
@@ -886,6 +888,19 @@ def train(args):
                 logger.info(f"[LoRA] inject={'ckpt' if args.lora_checkpoint else 'random'} "
                             f"rank={args.lora_rank} targets=[{args.lora_target_modules}] "
                             f"trainable params={_n_lora_params:,}")
+            # [NEW] resume LoRA weight from ckpt (lora_checkpoint 와 별개로 자동 처리)
+            if args.resume_from_checkpoint:
+                _ckpt_for_lora = torch.load(args.resume_from_checkpoint, map_location='cpu')
+                _lora_sd = _ckpt_for_lora.get('lora_state_dict', {})
+                if _lora_sd:
+                    _loaded = 0
+                    for n, p in dit.named_parameters():
+                        if n in _lora_sd:
+                            p.data.copy_(_lora_sd[n].to(p.device, p.dtype))
+                            _loaded += 1
+                    if global_rank == 0:
+                        logger.info(f"[LoRA] resumed from ckpt: {_loaded} tensors loaded")
+                del _ckpt_for_lora
 
     # Student patchify (FSDP 전에 생성 — pretrained weight 복사 필요)
     if args.align_weight > 0:
@@ -1200,10 +1215,22 @@ def train(args):
         ema.register()
         if args.resume_from_checkpoint and checkpoint.get("ema_state_dict"):
             _ema_sd = checkpoint["ema_state_dict"]
+            # [NEW] new format: {'shadow': ..., 'shadow_buffers': ...} / legacy: dict 자체가 shadow
+            if isinstance(_ema_sd, dict) and 'shadow' in _ema_sd and 'shadow_buffers' in _ema_sd:
+                _shadow_sd = _ema_sd['shadow']
+                _shadow_buf_sd = _ema_sd['shadow_buffers']
+            else:
+                _shadow_sd = _ema_sd
+                _shadow_buf_sd = {}
+            # parameter shadow
             for name, param in model.named_parameters():
-                if name in _ema_sd:
-                    ema.shadow[name] = _ema_sd[name].to(dtype=param.dtype, device=param.device)
-            logger.info(f"EMA state loaded from checkpoint ({len(ema.shadow)} params, cast to model dtype)")
+                if name in _shadow_sd:
+                    ema.shadow[name] = _shadow_sd[name].to(dtype=param.dtype, device=param.device)
+            # [NEW] buffer shadow (BN running stats EMA 등) — REPA-E style
+            for name, buf in model.named_buffers():
+                if name in _shadow_buf_sd:
+                    ema.shadow_buffers[name] = _shadow_buf_sd[name].to(dtype=buf.dtype, device=buf.device)
+            logger.info(f"EMA state loaded from checkpoint ({len(ema.shadow)} params, {len(ema.shadow_buffers)} buffers)")
 
     # [NEW - oliviaa] GAN adaptive weight용 last_layer 결정
     # [MODIFIED - oliviaa/dit_align] model.module = GeopriorDiTAlignModel → .vae 경유
@@ -1747,7 +1774,13 @@ def train(args):
                     ddp_sampler.state_dict(),
                     ckpt_dir,
                     f"checkpoint-{current_step}.ckpt",
-                    ema_state_dict=ema.shadow if args.ema else {},
+                    ema_state_dict=ema.state_dict() if args.ema else {},
+                    # [NEW] LoRA weight save (dit_pipe.dit 의 lora_ param 만)
+                    lora_state_dict=(
+                        {n: p.data.cpu().clone()
+                         for n, p in dit.named_parameters() if 'lora_' in n}
+                        if getattr(args, 'use_lora', False) else {}
+                    ),
                 )
                 logger.info(f"Checkpoint has been saved to `{file_path}`.")
 
