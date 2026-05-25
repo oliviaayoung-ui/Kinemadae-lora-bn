@@ -1,0 +1,36 @@
+# Checkpoints / data / outputs
+checkpoints/
+data/
+results/
+output/
+wandb/
+
+# panda70m video file lists (외부 datasets)
+panda70m_train*.txt
+panda70m_eval*.txt
+
+# DiffSynth-Studio (external, README 의 git clone 으로 설치)
+external/DiffSynth-Studio/
+
+# lpips cached weights (학습 시 자동 download — 또는 .cache/lpips/vgg.pth 보존 가능)
+# .cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Logs / temp
+*.log
+/tmp/
+nohup.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
